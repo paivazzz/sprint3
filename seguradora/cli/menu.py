@@ -1,11 +1,12 @@
-# cli/menu.py
+# seguradora/cli/menu.py
 from ..core.exceptions import AppError, OperacaoNaoPermitida
 from ..core.logging_conf import setup_logging
-from ..services import auth, regras, relatorios
+from ..services import relatorios
 from ..dao import clientes as cli_dao, seguros as se_dao, apolices as ap_dao, sinistros as si_dao
 from ..dao import auditoria as aud
 from .prompts import yesno, ask, buscar_por_cpf, buscar_por_numero_apolice
 from datetime import datetime
+import shutil
 
 logger = setup_logging()
 
@@ -16,18 +17,90 @@ def _guard(perfil_ativo, precisa_admin=False):
     if precisa_admin and perfil_ativo != "admin":
         raise OperacaoNaoPermitida()
 
+def _print_menu_grid(perfil: str):
+    """
+    Imprime o menu em grade (4 colunas), mantendo a sequência:
+    1,2,3,4,5,6,7,8,9,10,11,12,13,0 (se admin), senão só as opções permitidas.
+    """
+    itens = [
+        "[1] Listar Clientes",
+        "[2] Listar Seguros",
+        "[3] Listar Apólices",
+        "[4] Listar Sinistros",
+    ]
+    if perfil == "admin":
+        itens += [
+            "[5] Cadastrar Cliente",
+            "[6] Cadastrar Seguro",
+            "[7] Emitir Apólice",
+            "[8] Registrar Sinistro",
+            "[9] Editar Cliente",
+            "[10] Cancelar Apólice",
+            "[11] Fechar Sinistro",
+        ]
+    itens += ["[12] Relatórios"]
+    if perfil == "admin":
+        itens += ["[13] Excluir Cliente"]
+    itens += ["[0] Sair"]
+
+    cols = 4
+    width = shutil.get_terminal_size().columns
+    col_width = max(24, width // cols - 2)  # largura mínima para não quebrar
+    print("\n=== MENU ===")
+    for i, label in enumerate(itens):
+        end = "\n" if (i % cols == cols - 1) else ""
+        print(label.ljust(col_width), end=end)
+    if len(itens) % cols != 0:
+        print()  # quebra de linha final
+
+def _submenu_relatorios():
+    last = []
+    while True:
+        print("\n— Relatórios —")
+        print("[1] Receita mensal prevista")
+        print("[2] Top clientes por valor segurado")
+        print("[3] Sinistros por status")
+        print("[4] Sinistros por período (YYYY-MM a YYYY-MM)")
+        print("[5] Exportar último resultado (CSV)")
+        print("[0] Voltar")
+        sub = input("Escolha: ").strip()
+
+        if sub == "1":
+            rows = relatorios.receita_mensal_prevista(); last = rows
+            for r in rows:
+                valor = r['receita'] if r['receita'] is not None else 0
+                print(f"{r['ym']}: R${valor:.2f}")
+        elif sub == "2":
+            rows = relatorios.top_clientes_por_valor_segurado(); last = rows
+            for r in rows:
+                print(f"{r['cliente']}: R${r['total']:.2f}")
+        elif sub == "3":
+            rows = relatorios.sinistros_por_status(); last = rows
+            for r in rows:
+                print(f"{r['status']}: {r['qtd']}")
+        elif sub == "4":
+            ini = input("De (YYYY-MM): ").strip()
+            fim = input("Até (YYYY-MM): ").strip()
+            rows = relatorios.sinistros_por_periodo(ini, fim); last = rows
+            for r in rows:
+                print(f"{r['ym']}: {r['qtd']} sinistro(s)")
+        elif sub == "5":
+            if last:
+                caminho = relatorios.export_csv(f"rel_{datetime.now().strftime('%Y%m%d_%H%M%S')}", last)
+                print(f"Exportado: {caminho}")
+            else:
+                print("Nada para exportar ainda. Gere um relatório primeiro.")
+        elif sub == "0":
+            break
+        else:
+            print("Opção inválida.")
+
 def loop_principal(sessao):
     perfil = sessao["perfil"]
     usuario = {"username": sessao["username"], "perfil": perfil}
 
     while True:
-        print("\n=== MENU ===")
-        print("[1] Listar Clientes     [2] Listar Seguros     [3] Listar Apólices     [4] Listar Sinistros")
-        if perfil == "admin":
-            print("[5] Cadastrar Cliente   [6] Cadastrar Seguro   [7] Emitir Apólice      [8] Registrar Sinistro")
-            print("[9] Editar Cliente      [10] Cancelar Apólice  [11] Fechar Sinistro")
-        print("[12] Relatórios         [0] Sair")
-
+        _print_menu_grid(perfil)
         op = input("Escolha uma opção: ").strip()
         try:
             if op == "1":
@@ -96,8 +169,7 @@ def loop_principal(sessao):
                     beneficiarios = ask("Beneficiários (separados por vírgula): ")
                     sid = se_dao.criar_seguro_vida(titular, valor, beneficiarios)
                 else:
-                    print("Tipo inválido.")
-                    continue
+                    print("Tipo inválido."); continue
                 logger.info(f"seguro criado id={sid} titular={titular}")
                 _audit(usuario, "criar", "seguro", sid, True)
 
@@ -163,49 +235,33 @@ def loop_principal(sessao):
                     _audit(usuario, "fechar", "sinistro", numero, False)
 
             elif op == "12":
-                print("\n— Relatórios —")
-                print("[1] Receita mensal prevista")
-                print("[2] Top clientes por valor segurado")
-                print("[3] Sinistros por status")
-                print("[4] Sinistros por período (YYYY-MM a YYYY-MM)")
-                print("[5] Exportar último resultado (CSV)")
-                sub = input("Escolha: ").strip()
-                last = []
+                _submenu_relatorios()
 
-                if sub == "1":
-                    rows = relatorios.receita_mensal_prevista()
-                    last = rows
-                    for r in rows:
-                        print(f"{r['ym']}: R${r['receita'] or 0:.2f}")
-
-                elif sub == "2":
-                    rows = relatorios.top_clientes_por_valor_segurado()
-                    last = rows
-                    for r in rows:
-                        print(f"{r['cliente']}: R${r['total']:.2f}")
-
-                elif sub == "3":
-                    rows = relatorios.sinistros_por_status()
-                    last = rows
-                    for r in rows:
-                        print(f"{r['status']}: {r['qtd']}")
-
-                elif sub == "4":
-                    ini = input("De (YYYY-MM): ").strip()
-                    fim = input("Até (YYYY-MM): ").strip()
-                    rows = relatorios.sinistros_por_periodo(ini, fim)
-                    last = rows
-                    for r in rows:
-                        print(f"{r['ym']}: {r['qtd']} sinistro(s)")
-
-                elif sub == "5":
-                    if last:
-                        caminho = relatorios.export_csv(f"rel_{datetime.now().strftime('%Y%m%d_%H%M%S')}", last)
-                        print(f"Exportado: {caminho}")
-                    else:
-                        print("Nada para exportar ainda.")
+            elif op == "13":
+                _guard(perfil, precisa_admin=True)
+                cpf = buscar_por_cpf()
+                print("atenção: se houver apólices/seguros vinculados, a exclusão PADRÃO será BLOQUEADA.")
+                forcar = yesno("Deseja forçar exclusão em cascata (sinistros, apólices, seguros) antes do cliente?")
+                if yesno(f"Confirmar exclusão do cliente {cpf}?"):
+                    try:
+                        ok = cli_dao.deletar_por_cpf(cpf, force=forcar)
+                        if ok:
+                            print("Cliente excluído.")
+                            logger.info(f"cliente excluido cpf={cpf} force={forcar}")
+                            _audit(usuario, "excluir", "cliente", cpf, True, f"force={forcar}")
+                        else:
+                            print("Cliente não encontrado.")
+                            _audit(usuario, "excluir", "cliente", cpf, False, "não encontrado")
+                    except AppError as e:
+                        print(e.user_message)
+                        logger.error(f"erro negocio excluir cliente cpf={cpf}: {e}")
+                        _audit(usuario, "excluir", "cliente", cpf, False, e.user_message)
+                    except Exception as e:
+                        print("Erro ao excluir cliente.")
+                        logger.exception(f"erro inesperado excluir cliente cpf={cpf}: {e}")
+                        _audit(usuario, "excluir", "cliente", cpf, False, "erro inesperado")
                 else:
-                    print("Opção inválida.")
+                    print("Exclusão cancelada.")
 
             elif op == "0":
                 print("Encerrando...")
@@ -215,11 +271,9 @@ def loop_principal(sessao):
                 print("Opção inválida.")
 
         except OperacaoNaoPermitida as e:
-            print(e.user_message)
-            logger.error(f"bloqueado: {e}")
+            print(e.user_message); logger.error(f"bloqueado: {e}")
         except AppError as e:
-            print(e.user_message)
-            logger.error(f"erro de negócio: {e} | detalhes={getattr(e,'details',None)}")
+            print(e.user_message); logger.error(f"erro de negócio: {e} | detalhes={getattr(e,'details',None)}")
         except Exception as e:
             print("Algo deu errado. Verifique os campos e tente novamente.")
             logger.exception(f"erro inesperado: {e}")
