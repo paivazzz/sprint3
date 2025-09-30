@@ -1,7 +1,7 @@
 # seguradora/cli/menu.py
 from ..core.exceptions import AppError, OperacaoNaoPermitida
 from ..core.logging_conf import setup_logging
-from ..services import relatorios
+from ..services import relatorios, auth
 from ..dao import clientes as cli_dao, seguros as se_dao, apolices as ap_dao, sinistros as si_dao
 from ..dao import auditoria as aud
 from ..db import get_conn
@@ -26,8 +26,10 @@ def _guard(perfil_ativo, precisa_admin=False):
 
 def _print_menu_grid(perfil: str):
     """
-    Imprime o menu em grade (4 colunas), mantendo a sequência:
-    1..13 e depois 0 (quando admin). Para comum, mostra apenas as permitidas.
+    Imprime o menu em grade (4 colunas).
+    Admin: 1..14..17 e 0
+    Comum: 1..4, 12 e 0
+    Cliente: 1..4 e 0
     """
     itens = [
         "[1] Listar Clientes",
@@ -35,6 +37,7 @@ def _print_menu_grid(perfil: str):
         "[3] Listar Apólices",
         "[4] Listar Sinistros",
     ]
+
     if perfil == "admin":
         itens += [
             "[5] Cadastrar Cliente",
@@ -44,10 +47,16 @@ def _print_menu_grid(perfil: str):
             "[9] Editar Cliente",
             "[10] Cancelar Apólice",
             "[11] Fechar Sinistro",
+            "[12] Relatórios",
+            "[13] Excluir Cliente",
+            "[14] Cadastrar Usuário (cliente)",
+            "[15] Listar Usuários",
+            "[16] Editar Usuário",
+            "[17] Excluir Usuário",
         ]
-    itens += ["[12] Relatórios"]
-    if perfil == "admin":
-        itens += ["[13] Excluir Cliente"]
+    elif perfil == "comum":
+        itens += ["[12] Relatórios"]
+
     itens += ["[0] Sair"]
 
     cols = 4
@@ -121,7 +130,7 @@ def _submenu_relatorios():
         else:
             print("Opção inválida.")
 
-# ========================= Helpers de fluxo (edição/remoção) =========================
+# ========================= Helpers de fluxo (edição/remoção/cadastro user) =========================
 
 def _ask_int(msg):
     try:
@@ -205,6 +214,93 @@ def _editar_sinistro_flow(usuario):
     print("Sinistro atualizado." if ok else "Sinistro não encontrado/sem alteração.")
     _audit(usuario, "editar", "sinistro", sid, bool(ok), str(list(campos.keys())))
 
+def _cadastrar_usuario_cliente_flow(usuario_admin):
+    _guard(usuario_admin["perfil"], precisa_admin=True)
+    print("\n— Cadastrar Usuário (cliente) —")
+    username = ask("Username: ").strip()
+    senha = ask("Senha: ").strip()
+    cpf = buscar_por_cpf()
+    try:
+        ok = auth.criar_usuario_cliente(username, senha, cpf)
+        if ok:
+            print("Usuário (cliente) cadastrado com sucesso.")
+            logger.info(f"usuario cliente criado user={username} cpf={cpf}")
+            _audit(usuario_admin, "criar", "usuario", username, True, f"perfil=cliente cpf={cpf}")
+        else:
+            print("Não foi possível cadastrar o usuário.")
+            _audit(usuario_admin, "criar", "usuario", username, False, "retorno falso")
+    except AppError as e:
+        print(e.user_message); logger.error(f"erro de negócio ao criar usuario cliente: {e}")
+        _audit(usuario_admin, "criar", "usuario", username, False, e.user_message)
+    except Exception as e:
+        print("Erro ao cadastrar usuário."); logger.exception(f"erro inesperado criar usuario cliente: {e}")
+        _audit(usuario_admin, "criar", "usuario", username, False, "erro inesperado")
+
+def _listar_usuarios_flow(usuario_admin):
+    _guard(usuario_admin["perfil"], precisa_admin=True)
+    rows = auth.listar_usuarios()
+    print("\n— Usuários —")
+    if not rows:
+        print("(vazio)")
+        return
+    for u in rows:
+        # aceita dict, sqlite3.Row ou objeto com attrs
+        username = u["username"] if isinstance(u, dict) else getattr(u, "username", u[0] if isinstance(u, (list, tuple)) else None)
+        perfil = u.get("perfil") if isinstance(u, dict) else (u["perfil"] if hasattr(u, "keys") else (u[1] if isinstance(u, (list, tuple)) else None))
+        cliente_cpf = (u.get("cliente_cpf") if isinstance(u, dict) else (u["cliente_cpf"] if hasattr(u, "keys") else (u[2] if isinstance(u, (list, tuple)) else None)))
+        ativo = (u.get("ativo") if isinstance(u, dict) else (u["ativo"] if hasattr(u, "keys") else (u[3] if isinstance(u, (list, tuple)) else 1)))
+        ativo_str = "Ativo" if (ativo in (1, True, "1")) else "Inativo"
+        extra = f" | CPF: {cliente_cpf}" if cliente_cpf else ""
+        print(f"{username} | Perfil: {perfil}{extra} | {ativo_str}")
+
+def _editar_usuario_flow(usuario_admin):
+    _guard(usuario_admin["perfil"], precisa_admin=True)
+    print("\n— Editar Usuário —")
+    username = ask("Username do usuário a editar: ").strip()
+    campos = {}
+    nova_senha = ask("Nova senha (enter p/ manter): ", required=False)
+    if nova_senha: campos["senha"] = nova_senha
+    novo_perfil = ask("Novo perfil (admin/comum/cliente) (enter p/ manter): ", required=False).strip().lower()
+    if novo_perfil in ("admin", "comum", "cliente"): campos["perfil"] = novo_perfil
+    if novo_perfil == "cliente" or ask("Atualizar CPF vinculado? (s/N): ", required=False).strip().lower() == "s":
+        # Atualiza/define CPF vinculado (apenas se for cliente)
+        cpf = buscar_por_cpf()
+        campos["cliente_cpf"] = cpf
+    ativo_in = ask("Ativo? (s/N) (enter p/ manter): ", required=False).strip().lower()
+    if ativo_in in ("s", "n"):
+        campos["ativo"] = (ativo_in == "s")
+    if not campos:
+        print("Nada para atualizar.")
+        return
+    try:
+        ok = auth.editar_usuario(username, **campos)
+        print("Usuário atualizado." if ok else "Usuário não encontrado/sem alteração.")
+        _audit(usuario_admin, "editar", "usuario", username, bool(ok), str(list(campos.keys())))
+    except AppError as e:
+        print(e.user_message); logger.error(f"erro de negócio ao editar usuario: {e}")
+        _audit(usuario_admin, "editar", "usuario", username, False, e.user_message)
+    except Exception as e:
+        print("Erro ao editar usuário."); logger.exception(f"erro inesperado editar usuario: {e}")
+        _audit(usuario_admin, "editar", "usuario", username, False, "erro inesperado")
+
+def _excluir_usuario_flow(usuario_admin):
+    _guard(usuario_admin["perfil"], precisa_admin=True)
+    print("\n— Excluir Usuário —")
+    username = ask("Username do usuário a excluir: ").strip()
+    if not yesno(f"Confirmar exclusão do usuário '{username}'?"):
+        print("Exclusão cancelada.")
+        return
+    try:
+        ok = auth.excluir_usuario(username)
+        print("Usuário excluído." if ok else "Usuário não encontrado.")
+        _audit(usuario_admin, "excluir", "usuario", username, bool(ok))
+    except AppError as e:
+        print(e.user_message); logger.error(f"erro de negócio ao excluir usuario: {e}")
+        _audit(usuario_admin, "excluir", "usuario", username, False, e.user_message)
+    except Exception as e:
+        print("Erro ao excluir usuário."); logger.exception(f"erro inesperado excluir usuario: {e}")
+        _audit(usuario_admin, "excluir", "usuario", username, False, "erro inesperado")
+
 # ========================= Busca rápida =========================
 
 def _busca_rapida(q) -> bool:
@@ -260,6 +356,12 @@ def _busca_rapida(q) -> bool:
 # ========================= Loop principal =========================
 
 def loop_principal(sessao):
+    """
+    A visão do menu é definida por sessao['perfil']:
+      - 'admin'   -> todas as opções (inclui 14..17 para usuários)
+      - 'comum'   -> 1..4 e 12, 0
+      - 'cliente' -> apenas 1..4 e 0
+    """
     perfil = sessao["perfil"]
     usuario = {"username": sessao["username"], "perfil": perfil}
 
@@ -268,7 +370,7 @@ def loop_principal(sessao):
         op = input("Escolha uma opção: ").strip()
 
         # Busca rápida: se não for um código de opção, tenta pesquisar e volta pro menu
-        if op not in {"0","1","2","3","4","5","6","7","8","9","10","11","12","13"}:
+        if op not in {"0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17"}:
             if _busca_rapida(op):
                 continue
 
@@ -419,7 +521,10 @@ def loop_principal(sessao):
                     _audit(usuario, "fechar", "sinistro", numero, False)
 
             elif op == "12":
-                _submenu_relatorios()
+                if perfil == "admin" or perfil == "comum":
+                    _submenu_relatorios()
+                else:
+                    print("Opção inválida.")
 
             elif op == "13":
                 _guard(perfil, precisa_admin=True)
@@ -437,15 +542,25 @@ def loop_principal(sessao):
                             print("Cliente não encontrado.")
                             _audit(usuario, "excluir", "cliente", cpf, False, "não encontrado")
                     except AppError as e:
-                        print(e.user_message)
-                        logger.error(f"erro negocio excluir cliente cpf={cpf}: {e}")
+                        print(e.user_message); logger.error(f"erro negocio excluir cliente cpf={cpf}: {e}")
                         _audit(usuario, "excluir", "cliente", cpf, False, e.user_message)
                     except Exception as e:
-                        print("Erro ao excluir cliente.")
-                        logger.exception(f"erro inesperado excluir cliente cpf={cpf}: {e}")
+                        print("Erro ao excluir cliente."); logger.exception(f"erro inesperado excluir cliente cpf={cpf}: {e}")
                         _audit(usuario, "excluir", "cliente", cpf, False, "erro inesperado")
                 else:
                     print("Exclusão cancelada.")
+
+            elif op == "14":
+                _cadastrar_usuario_cliente_flow(usuario)
+
+            elif op == "15":
+                _listar_usuarios_flow(usuario)
+
+            elif op == "16":
+                _editar_usuario_flow(usuario)
+
+            elif op == "17":
+                _excluir_usuario_flow(usuario)
 
             elif op == "0":
                 print("Encerrando...")
