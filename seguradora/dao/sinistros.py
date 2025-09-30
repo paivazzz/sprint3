@@ -27,3 +27,21 @@ def listar():
         return conn.execute(
             "SELECT si.*, a.numero AS apolice_numero FROM sinistros si JOIN apolices a ON a.id=si.apolice_id ORDER BY si.criado_em DESC"
         ).fetchall()
+
+# seguradora/dao/sinistros.py
+from ..db import get_conn
+
+def editar_por_id(sinistro_id: int, **campos) -> bool:
+    """
+    Edita sinistro pelo ID.
+    Campos comuns: descricao, data (DD/MM/AAAA), status ('Aberto'/'Fechado')
+    """
+    if not campos:
+        return False
+    cols, vals = [], []
+    for k, v in campos.items():
+        cols.append(f"{k}=?"); vals.append(v)
+    vals.append(sinistro_id)
+    with get_conn() as conn:
+        cur = conn.execute(f"UPDATE sinistros SET {', '.join(cols)} WHERE id=?", tuple(vals))
+        return cur.rowcount > 0

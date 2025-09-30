@@ -46,3 +46,28 @@ def listar():
         return conn.execute(
             "SELECT a.*, s.titular, s.tipo FROM apolices a JOIN seguros s ON s.id=a.seguro_id ORDER BY a.criado_em DESC"
         ).fetchall()
+
+# seguradora/dao/apolices.py
+from ..db import get_conn
+
+def editar(numero: int, **campos) -> bool:
+    """
+    Edita apólice por número. Campos comuns:
+      - valor_mensal (float), status ('Ativa'/'Cancelada'), validade_inicial, validade_final
+    Regra simples: se já estiver 'Cancelada', impedir voltar pra 'Ativa' (exemplo).
+    """
+    if not campos:
+        return False
+    if "status" in campos and campos["status"] == "Ativa":
+        # exemplo de regra: não reativar cancelada
+        with get_conn() as conn:
+            ap = conn.execute("SELECT status FROM apolices WHERE numero=?", (numero,)).fetchone()
+            if ap and ap["status"] == "Cancelada":
+                return False
+    cols, vals = [], []
+    for k, v in campos.items():
+        cols.append(f"{k}=?"); vals.append(v)
+    vals.append(numero)
+    with get_conn() as conn:
+        cur = conn.execute(f"UPDATE apolices SET {', '.join(cols)} WHERE numero=?", tuple(vals))
+        return cur.rowcount > 0
