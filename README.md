@@ -9,8 +9,9 @@ Davi Barboza Silva - 562370
 
 
 para rodar: python -m seguradora.app
+
 usuario: admin
 senha: admin123
 
 usuario sem acesso de admin: Rafael Paiva
-senha: 1234
+senha: 12342
