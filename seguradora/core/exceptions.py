@@ -1,18 +1,18 @@
-# core/exceptions.py
+# seguradora/core/exceptions.py
 class AppError(Exception):
-    user_message: str = "Ocorreu um erro."
-    def __init__(self, user_message=None, *, details=None):
-        super().__init__(user_message or self.user_message)
+    def __init__(self, message, user_message=None, details=None):
+        super().__init__(message)
+        self.user_message = user_message or "Operação não pôde ser concluída."
         self.details = details
 
+class OperacaoNaoPermitida(AppError):
+    def __init__(self, message="Operação não permitida para seu perfil."):
+        super().__init__(message, user_message="Operação não permitida para seu perfil.")
+
 class CpfInvalido(AppError):
-    user_message = "CPF inválido."
+    def __init__(self, cpf):
+        super().__init__(f"CPF inválido: {cpf}", user_message="CPF inválido. Verifique e tente novamente.")
 
 class ApoliceInexistente(AppError):
-    user_message = "Apólice não encontrada."
-
-class OperacaoNaoPermitida(AppError):
-    user_message = "Operação não permitida para seu perfil."
-
-class RegraNegocio(AppError):
-    user_message = "Operação não permitida pelas regras do sistema."
+    def __init__(self, numero):
+        super().__init__(f"Apólice inexistente: {numero}", user_message="Apólice não encontrada.")
